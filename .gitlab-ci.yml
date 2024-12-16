@@ -1,0 +1,49 @@
+stages:
+  - build
+  - deploy
+
+variables:
+  ECR_REPO: "ecr-repo-url-here"
+  AWS_REGION: "ap-south-1"
+  KUBE_NAMESPACE: "myapp"
+  DEPLOYMENT_NAME: "kubernetes-automation-tool"
+
+build:
+  stage: build
+  image: docker:24.0.0
+  services:
+    - docker:dind
+  before_script:
+    - echo "Logging into AWS ECR..."
+    - aws --version || apk add --no-cache aws-cli
+    - $(aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO)
+  script:
+    - echo "Building Docker image..."
+    - docker build -t $ECR_REPO:$CI_COMMIT_SHA .
+    - docker tag $ECR_REPO:$CI_COMMIT_SHA $ECR_REPO:latest
+    - echo "Pushing Docker image to ECR..."
+    - docker push $ECR_REPO:$CI_COMMIT_SHA
+    - docker push $ECR_REPO:latest
+  only:
+    - main
+  tags:
+    - docker
+
+deploy:
+  stage: deploy
+  image: amazon/aws-cli:2.13.17
+  before_script:
+    - echo "Configuring access to EKS cluster..."
+    - aws eks --region $AWS_REGION update-kubeconfig --name my-eks-cluster
+  script:
+    - echo "Deploying application to EKS..."
+    # Replace image in Kubernetes deployment file
+    - sed -i "s|IMAGE_PLACEHOLDER|$ECR_REPO:latest|g" k8s-deployment.yml
+    # Apply Kubernetes manifests
+    - kubectl apply -f k8s-deployment.yml
+    # Wait for the deployment to roll out
+    - kubectl rollout status deployment/$DEPLOYMENT_NAME -n $KUBE_NAMESPACE
+  only:
+    - main
+  tags:
+    - eks
